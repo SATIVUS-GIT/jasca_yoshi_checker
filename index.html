@@ -3,9 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>JASCA 要旨PDFチェッカー（ブラウザ版）</title>
-<!-- pdf.js from CDN -->
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.js"></script>
+<title>JASCA 要旨PDFチェッカー（ブラウザ版・互換強化）</title>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <style>
   :root { --bg:#0b0c10; --card:#15161a; --text:#e6e6e6; --muted:#a7a7a7; --ok:#1fbf75; --ng:#ff5a5f; --warn:#fbbf24; }
   body { margin:0; font-family: ui-sans-serif, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", Roboto, "Segoe UI", Arial, sans-serif; background:var(--bg); color:var(--text); }
@@ -15,7 +14,7 @@
   main { padding:18px; max-width:1080px; margin:0 auto; }
   .uploader { border:2px dashed #3a3d45; border-radius:16px; padding:22px; text-align:center; background: #121317; }
   .uploader.drag { border-color:#6aa0ff; background:#101522; }
-  .uploader input { display:none; }
+  .uploader input[type=file] { display:none; }
   .btn { display:inline-block; padding:10px 14px; border-radius:12px; border:1px solid #2a2d35; background:#1c1f26; color:#fff; cursor:pointer; font-weight:600; }
   .grid { display:grid; grid-template-columns: 1fr; gap:16px; margin-top:16px; }
   @media (min-width: 960px) { .grid { grid-template-columns: 1.2fr .8fr; } }
@@ -32,20 +31,23 @@
   .result .row { border-top:1px solid #23252d; padding:10px 0; }
   .small { font-size:0.9rem; color:#bdbdbd; }
   footer { padding:16px 20px; color:#9aa0a6; font-size:0.85rem; }
+  .errors { margin-top:10px; color:#ffb4b4; font-size:0.9rem; white-space:pre-wrap; }
 </style>
 </head>
 <body>
 <header>
-  <h1>JASCA 要旨PDFチェッカー（ブラウザ版）</h1>
-  <div class="muted">PDFをアップロードすると、<b>ページサイズ/枚数</b>・<b>図版の有無</b>・<b>本文字数</b>・<b>キーワード形式</b>・<b>文中挙示と参照文献</b>を自動チェックします（要領・チェック表の要点を自動化）。</div>
+  <h1>JASCA 要旨PDFチェッカー（ブラウザ版・互換強化）</h1>
+  <div class="muted">PDFをアップロードすると自動チェックします。PDFは外部送信されません。</div>
 </header>
 
 <main>
   <div class="grid">
     <section class="card">
-      <div id="drop" class="uploader">
-        <p><b>ここにPDFをドラッグ&ドロップ</b> または <label class="btn">ファイルを選択<input id="file" type="file" accept="application/pdf"></label></p>
+      <div id="drop" class="uploader" tabindex="0">
+        <p><b>ここにPDFをドラッグ&ドロップ</b><br>または</p>
+        <label class="btn">ファイルを選択<input id="file" type="file" accept="application/pdf,.pdf" multiple></label>
         <p class="muted small">ローカルで完結（サーバ送信なし）。複数ファイルも可。</p>
+        <div id="errors" class="errors"></div>
       </div>
 
       <div class="result" id="result" style="display:none; margin-top:12px"></div>
@@ -69,7 +71,7 @@
       <label>文中挙示の全角大カッコ［…］内：全角コロン『：』必須</label>
       <div class="small">例：［山田 2010：25-30］</div>
       <div style="margin-top:12px" class="muted small">
-        注：フォント種別と厳密なポイントはPDF仕様上の制約で簡易判定です。必要ならサーバ版で強化できます。
+        注：フォント厳密判定はブラウザ単体では限定的です。必要ならサーバ版で強化可能。
       </div>
     </aside>
   </div>
@@ -78,45 +80,57 @@
 <footer>© JASCA checker (client-only). PDFはブラウザ外へ送信しません。</footer>
 
 <script>
+const errorsEl = document.getElementById('errors');
+function showError(msg){ errorsEl.textContent = (errorsEl.textContent? errorsEl.textContent + "\\n" : "") + msg; }
+function clearErrors(){ errorsEl.textContent = ""; }
+
 const pdfjsLib = window['pdfjs-dist/build/pdf'];
-pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.js";
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
 
 const drop = document.getElementById('drop');
 const input = document.getElementById('file');
 const result = document.getElementById('result');
 
 function setDrag(on){ drop.classList.toggle('drag', !!on); }
-drop.addEventListener('dragover', e=>{ e.preventDefault(); setDrag(true); });
-drop.addEventListener('dragleave', e=>{ setDrag(false); });
+['dragenter','dragover'].forEach(evt => drop.addEventListener(evt, e=>{ e.preventDefault(); setDrag(true); }));
+['dragleave','drop'].forEach(evt => drop.addEventListener(evt, e=>{ e.preventDefault(); if(evt==='drop') setDrag(false); }));
+
 drop.addEventListener('drop', e=>{
-  e.preventDefault(); setDrag(false);
-  const files = [...e.dataTransfer.files].filter(f=>f.type==='application/pdf' || f.name.endsWith('.pdf'));
-  if (files.length) runBatch(files);
+  clearErrors();
+  const files = [...e.dataTransfer.files].filter(f => f.type==='application/pdf' || /\.pdf$/i.test(f.name));
+  if (!files.length){ showError("PDFファイルではない可能性があります。拡張子 .pdf を確認してください。"); return; }
+  runBatch(files);
 });
 input.addEventListener('change', e=>{
+  clearErrors();
   const files = [...e.target.files];
-  if (files.length) runBatch(files);
+  if (!files.length){ showError("ファイルが選択されていません。"); return; }
+  runBatch(files);
 });
 
 async function runBatch(files){
   result.style.display = 'block';
   result.innerHTML = '';
   for (const f of files){
-    const arr = await f.arrayBuffer();
-    const report = await checkPdf(arr, f.name);
-    result.appendChild(renderReport(report));
+    try{
+      const arr = await f.arrayBuffer();
+      const report = await checkPdf(arr, f.name);
+      result.appendChild(renderReport(report));
+    }catch(err){
+      showError(`[${f.name}] の読み込みに失敗しました: ` + (err && err.message? err.message : String(err)));
+      console.error(err);
+    }
   }
   window.scrollTo({top: result.offsetTop - 12, behavior: 'smooth'});
 }
 
 function nearlyEqual(a,b,tol=8){ return Math.abs(a-b) <= tol; }
-
 function countJapaneseChars(s){ return [...s].filter(ch=>!/\s/.test(ch)).length; }
 function countEnglishWords(s){ const m = s.match(/[A-Za-z]+(?:[-'][A-Za-z]+)?/g); return m? m.length : 0; }
 function hasJapanese(s){ return /[ぁ-んァ-ン一-龥]/.test(s); }
 
 function splitSections(text, refHeaders, kwHeaders){
-  const lines = text.split(/\r?\n/);
+  const lines = text.split(/\\r?\\n/);
   let refsIdx=null, kwIdx=null;
   for (let i=0;i<lines.length;i++){
     const t = lines[i].trim();
@@ -124,20 +138,20 @@ function splitSections(text, refHeaders, kwHeaders){
     if (kwIdx===null && kwHeaders.some(h=>t.startsWith(h))) kwIdx=i;
   }
   const endIdx = Math.min(...[refsIdx, kwIdx].filter(v=>v!==null).concat([lines.length]));
-  const body = lines.slice(0, endIdx).join('\n');
-  const refs = refsIdx!==null ? lines.slice(refsIdx).join('\n') : '';
-  const kws  = kwIdx!==null ? lines.slice(kwIdx).join('\n') : '';
+  const body = lines.slice(0, endIdx).join('\\n');
+  const refs = refsIdx!==null ? lines.slice(refsIdx).join('\\n') : '';
+  const kws  = kwIdx!==null ? lines.slice(kwIdx).join('\\n') : '';
   return {body, refs, keywords: kws};
 }
 
 function checkKeywords(block, kwMin, kwMax){
   const issues=[]; let ok=false, found=false;
-  for (const line of block.split(/\r?\n/)){
+  for (const line of block.split(/\\r?\\n/)){
     const s=line.trim();
     if (s.startsWith('キーワード')){
       found=true;
-      const p = s.split(/[:：]\s*/,2);
-      if (p.length<2 || !p[1]) { issues.push('『キーワード：』の後に語がありません。'); continue; }
+      const p = s.split(/[:：]\\s*/,2);
+      if (p.length<2 || !p[1]) { issues.append('『キーワード：』の後に語がありません。'); continue; }
       const terms = p[1].split('、').map(t=>t.trim()).filter(Boolean);
       const n=terms.length; if (!(n>=kwMin && n<=kwMax)) issues.push(`キーワード数が${n}件（${kwMin}〜${kwMax}語にしてください）`);
       ok=true;
@@ -147,7 +161,7 @@ function checkKeywords(block, kwMin, kwMax){
       if (p.length<2 || !p[1].trim()){ issues.push("'Keywords:' の後に語がありません。"); continue; }
       const terms = p[1].split(',').map(t=>t.trim()).filter(Boolean);
       const n=terms.length; if (!(n>=kwMin && n<=kwMax)) issues.push(`Keywords 数が${n}件（${kwMin}〜${kwMax}語にしてください）`);
-      const bad = terms.filter(t=>!/^[A-Z][A-Za-z\-]*/.test(t));
+      const bad = terms.filter(t=>!/^[A-Z][A-Za-z\\-]*/.test(t));
       if (bad.length) issues.push('Keywords は頭文字大文字にしてください: '+bad.join(', '));
       ok=true;
     }
@@ -156,10 +170,7 @@ function checkKeywords(block, kwMin, kwMax){
   return {ok: ok && issues.length===0, issues};
 }
 
-function findCitationMarkers(text){
-  const m = text.match(/［[^］]+］/g);
-  return m || [];
-}
+function findCitationMarkers(text){ return text.match(/［[^］]+］/g) || []; }
 function checkCitationFormat(markers){
   const issues=[];
   for (const m of markers){
@@ -177,37 +188,42 @@ async function checkPdf(arrayBuffer, name){
   const refHeaders = document.getElementById('refHeaders').value.split(',').map(s=>s.trim()).filter(Boolean);
   const kwHeaders = document.getElementById('kwHeaders').value.split(',').map(s=>s.trim()).filter(Boolean);
 
-  const loadingTask = pdfjsLib.getDocument({data: arrayBuffer});
-  const pdf = await loadingTask.promise;
-  const reports = [];
+  let pdf;
+  try{
+    pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+  }catch(e){
+    showError("pdf.js の初期化に失敗しました。HTTPSで配信されているか、CDNがブロックされていないか確認してください。");
+    throw e;
+  }
   let allText = '';
   let hasImage = false;
   let allA4 = true;
 
   for (let i=1;i<=pdf.numPages;i++){
     const page = await pdf.getPage(i);
-    // Page size in PDF points via page.view
-    const view = page.view; // [xMin, yMin, xMax, yMax] in points (1/72in)
-    const widthPt = view[2] - view[0];
-    const heightPt = view[3] - view[1];
+    const view = page.view;
+    const widthPt = view[2]-view[0], heightPt = view[3]-view[1];
     const A4W = 595.276, A4H = 841.89;
     const a4 = (nearlyEqual(widthPt, A4W) && nearlyEqual(heightPt, A4H)) ||
                (nearlyEqual(heightPt, A4W) && nearlyEqual(widthPt, A4H));
     if (!a4) allA4 = false;
 
-    // Text
-    const textContent = await page.getTextContent();
-    const pageText = textContent.items.map(it=>it.str).join('\n');
-    allText += pageText + '\n';
+    try{
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items.map(it=>it.str).join('\\n');
+      allText += pageText + '\\n';
+    }catch(e){
+      showError(`[${name}] テキスト抽出に失敗しました（スキャンPDFの可能性）。`);
+    }
 
-    // Image detection via operator list
-    const ops = await page.getOperatorList();
-    const OPS = pdfjsLib.OPS;
-    const arr = ops.fnArray;
-    if (arr.some(fn => fn===OPS.paintImageXObject || fn===OPS.paintInlineImageXObject)) hasImage = true;
+    try{
+      const ops = await page.getOperatorList();
+      const OPS = pdfjsLib.OPS;
+      const arr = ops.fnArray;
+      if (arr.some(fn => fn===OPS.paintImageXObject || fn===OPS.paintInlineImageXObject)) hasImage = true;
+    }catch(e){ /* ignore */ }
   }
 
-  // Build checks
   const items = [];
   items.push({rule:"A4縦長 1枚", result: (allA4 && pdf.numPages===1) ? "OK" : "NG", details:`pages=${pdf.numPages}; all_A4=${allA4}`});
   items.push({rule:"注・図版（写真・図・表）なし", result: hasImage? "NG":"OK", details:`画像検出=${hasImage? "あり":"なし"}`});
@@ -220,9 +236,9 @@ async function checkPdf(arrayBuffer, name){
   items.push({rule:`本文のみ: 日本語${minJp}字以上 / 英語${minEn}語以上`, result: passLen? "OK":"NG", details:`判定=${isJp? "日本語":"英語"}; 日本語文字数=${jpLen}; 英語語数=${enWords}`});
 
   const kw = checkKeywords(keywords, kwMin, kwMax);
-  const header = body.split(/\r?\n/).slice(0,8).join('\n');
+  const header = body.split(/\\r?\\n/).slice(0,8).join('\\n');
   const headerOK = /(大学|研究所|学部|学科|センター|Department|University|Institute)/.test(header);
-  const firstLine = (body.split(/\r?\n/)[0]||'').trim();
+  const firstLine = (body.split(/\\r?\\n/)[0]||'').trim();
   const titleOK = firstLine.length >= 3;
   const okAll = kw.ok && headerOK && titleOK && body.trim().length>0;
   const details = [];
@@ -231,15 +247,21 @@ async function checkPdf(arrayBuffer, name){
   if (kw.issues.length) details.push(...kw.issues.map(x=>"KW: "+x));
   items.push({rule:"演題名/氏名/所属/本文/キーワード(3~5語)", result: okAll? "OK":"NG", details: details.length? details.join(" / ") : "OK"});
 
-  const markers = findCitationMarkers(allText);
-  const citIssues = checkCitationFormat(markers);
-  const refsLines = refs.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  const markers = (allText.match(/［[^］]+］/g) || []);
+  const citIssues = (function(markers){
+    const issues=[];
+    for (const m of markers){
+      const inside = m.slice(1,-1);
+      if (!inside.includes('：')) issues.push(`全角コロン（：）がありません: ${m}`);
+    }
+    return issues;
+  })(markers);
+  const refsLines = refs.split(/\\r?\\n/).map(s=>s.trim()).filter(Boolean);
   let citRes, citDet;
   if (markers.length && refsLines.length===0){ citRes="NG"; citDet="文中挙示があるのに参照文献セクションが見当たりません"; }
   else { citRes = citIssues.length? "NG":"OK"; citDet = citIssues.length? citIssues.join(" / ") : (markers.length? "OK":"（文中挙示なし）"); }
   items.push({rule:"文中参照［著者 年：頁］と参照文献の対応", result: citRes, details: citDet});
 
-  // Fullwidth ASCII warning
   const fw = allText.match(/[！-～]/g) || [];
   const fwRatio = fw.length / Math.max(1, allText.length);
   items.push({rule:"英数字は半角（全角ASCIIの多用を警告）", result: fwRatio>0.01? "NG":"OK", details:`全角ASCII数=${fw.length}`});
@@ -256,7 +278,7 @@ function renderReport(rep){
 
   el.innerHTML = `
     <div class="status">
-      <span class="pill mono">${rep.name}</span>
+      <span class="pill mono">${escapeHtml(rep.name)}</span>
       <span class="pill ok">OK ${okCount}</span>
       <span class="pill ng">NG ${ngCount}</span>
       ${skCount? `<span class="pill warn">SKIP ${skCount}</span>`: ''}
@@ -271,7 +293,7 @@ function renderReport(rep){
   return el;
 }
 
-function escapeHtml(s){ return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function escapeHtml(s){ return s.replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',\"'\":'&#39;'}[c])); }
 </script>
 </body>
 </html>
